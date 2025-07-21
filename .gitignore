@@ -1,0 +1,11 @@
+__pycache__/
+data/raw/
+*.py[cod]
+*$py.class
+*.log
+*.npy
+.ipynb_checkpoints
+stats_csv/*
+stats_png/*
+logs/*
+.DS_Store
