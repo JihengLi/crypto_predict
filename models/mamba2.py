@@ -1,9 +1,9 @@
 import torch
 import torch.nn as nn
-from mamba_ssm import Mamba2
+from .blocks import Mamba2Block
 
 
-class Mamba2Model(nn.Module):
+class Mamba2Multitask(nn.Module):
     def __init__(
         self,
         input_dim: int = 46,
@@ -14,12 +14,12 @@ class Mamba2Model(nn.Module):
         num_layers: int = 4,
         dropout: float = 0.1,
     ):
-        super(Mamba2Model, self).__init__()
+        super(Mamba2Multitask, self).__init__()
         self.input_proj = nn.Linear(input_dim, d_model)
 
         self.blocks = nn.ModuleList(
             [
-                Mamba2(
+                Mamba2Block(
                     d_model=d_model,
                     d_state=d_state,
                     d_conv=d_conv,
