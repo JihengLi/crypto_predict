@@ -1,12 +1,9 @@
-# nohup environs/python3.10/bin/python3.10 tensor_metric_infonce_training/train.py > tensor_metric_infonce_training/out.log 2>&1 &
-
 import os, math, re
 import torch
 
 from datasets import *
 from models import *
 from utils import *
-from losses import *
 from configs import *
 
 EPOCH_NUM = 100

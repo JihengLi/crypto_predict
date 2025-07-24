@@ -5,7 +5,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from einops import rearrange
-from ..utils import RMSNorm
+from ..modules import RMSNorm
 from huggingface_hub import PyTorchModelHubMixin
 
 

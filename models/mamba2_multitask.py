@@ -2,7 +2,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from .utils import *
+from .modules import *
 from .blocks import *
 
 
@@ -18,7 +18,7 @@ class Mamba2Multitask(nn.Module):
         dropout: float = 0.1,
         drop_path_prob: float = 0.1,
         max_len: int = 10000,
-        cls_weight: float = 2.0,
+        cls_weight: float = 1.0,
         reg_weight: float = 1.0,
         enable_mhsa: bool = True,
         mhsa_every: int = 2,

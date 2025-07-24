@@ -1,4 +1,5 @@
 import torch
+
 from torch.utils.data import DataLoader
 from torch.amp import GradScaler
 from models import *
@@ -54,7 +55,7 @@ class Mamba2Config:
         return train_loader, val_loader
 
     def _build_model(self):
-        model = Mamba2Multitask(dropout=0.3, drop_path_prob=0.3, enable_mhsa=False).to(
+        model = Mamba2Multitask(dropout=0.3, drop_path_prob=0.3, enable_mhsa=True).to(
             self.device
         )
         return model
