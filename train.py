@@ -34,7 +34,7 @@ if __name__ == "__main__":
     ckpt_dir = "outputs/checkpoints"
 
     latest_epoch = -1
-    pat = re.compile(r"dti_epoch(\d+)\.pth$")
+    pat = re.compile(r"epoch(\d+)\.pth$")
     resume_path = None
 
     for fname in os.listdir(ckpt_dir):
