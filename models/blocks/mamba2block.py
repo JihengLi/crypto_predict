@@ -25,7 +25,6 @@ def mamba_chunk_scan_combined(
     Bsz, L, h, p = x.shape
     device, dtype = x.device, x.dtype
     if dt_softplus:
-        # dt: (B,h), dt_bias: (h,)
         dt_dis = F.softplus(dt.unsqueeze(-1) + dt_bias.reshape(1, h)).clamp(
             *dt_limit
         )  # (B,h,1)
@@ -76,6 +75,7 @@ class Mamba2Block(nn.Module, PyTorchModelHubMixin):
         D_has_hdim=False,
         rmsnorm=True,
         norm_before_gate=False,
+        chunksize=256,
         dt_min=0.001,
         dt_max=0.1,
         dt_init_floor=1e-4,
@@ -102,6 +102,7 @@ class Mamba2Block(nn.Module, PyTorchModelHubMixin):
         self.D_has_hdim = D_has_hdim
         self.rmsnorm = rmsnorm
         self.norm_before_gate = norm_before_gate
+        self.chunksize = chunksize
         self.dt_limit = dt_limit
         self.activation = "silu"
 
@@ -211,7 +212,7 @@ class Mamba2Block(nn.Module, PyTorchModelHubMixin):
             A,
             B_param,
             C_param,
-            chunk_size=256,
+            chunk_size=self.chunksize,
             D=D_param,
             z=z_hp,
             dt_bias=self.dt_bias,

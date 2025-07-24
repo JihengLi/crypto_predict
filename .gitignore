@@ -5,7 +5,5 @@ data/raw/
 *.log
 *.npy
 .ipynb_checkpoints
-stats_csv/*
-stats_png/*
-logs/*
+outputs/*
 .DS_Store

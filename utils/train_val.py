@@ -1,0 +1,196 @@
+import torch, gc, os, csv
+
+from torch.amp import autocast
+from tqdm import tqdm
+from contextlib import contextmanager
+
+
+@contextmanager
+def gpu_safe_context():
+    try:
+        yield
+    except Exception:
+        gc.collect()
+        torch.cuda.empty_cache()
+        raise
+
+
+def process_train_batch(
+    batch,
+    model,
+    optimizer,
+    scheduler,
+    scaler,
+    device,
+    micro_seq_len: int = 1024,
+    clip_grad: float = 5.0,
+):
+    optimizer.zero_grad(set_to_none=True)
+
+    inputs = batch["inputs"].to(device, non_blocking=True)
+    cls = batch["cls"].to(device, non_blocking=True)
+    p90 = batch["p90"].to(device, non_blocking=True)
+    p10 = batch["p10"].to(device, non_blocking=True)
+    sigma = batch["sigma"].to(device, non_blocking=True)
+
+    seq_chunks = torch.split(inputs, micro_seq_len, dim=1)
+    with autocast(device.type):
+        for i, x_chunk in enumerate(seq_chunks):
+            dir_logits_chunk, reg_out_chunk = model(x_chunk)
+            if i < len(seq_chunks) - 1:
+                dir_logits_chunk = dir_logits_chunk.detach()
+                reg_out_chunk = reg_out_chunk.detach()
+        loss, cls_loss, reg_loss = model.multi_task_loss(
+            dir_logits_chunk, reg_out_chunk, cls, p90, p10, sigma
+        )
+
+    scaler.scale(loss).backward()
+    scaler.unscale_(optimizer)
+    torch.nn.utils.clip_grad_norm_(model.parameters(), clip_grad)
+    scaler.step(optimizer)
+    scaler.update()
+    scheduler.step()
+    return loss.item(), cls_loss.item(), reg_loss.item()
+
+
+@torch.inference_mode()
+def process_val_batch(batch, model, device):
+    x = batch["inputs"].to(device, non_blocking=True)
+    cls = batch["cls"].to(device, non_blocking=True)
+    p90 = batch["p90"].to(device, non_blocking=True)
+    p10 = batch["p10"].to(device, non_blocking=True)
+    sigma = batch["sigma"].to(device, non_blocking=True)
+
+    with autocast(device.type):
+        dir_logits, reg_out = model(x)
+        dir_logits = dir_logits.squeeze(-1)
+        loss, cls_loss, reg_loss = model.multi_task_loss(
+            dir_logits, reg_out, cls, p90, p10, sigma
+        )
+    return loss.item(), cls_loss.item(), reg_loss.item()
+
+
+def train_loop(
+    model,
+    train_loader,
+    val_loader,
+    optimizer,
+    scheduler,
+    scaler,
+    device,
+    epochs,
+    ckpt_dir,
+):
+    os.makedirs(ckpt_dir, exist_ok=True)
+    log_path = os.path.join(ckpt_dir, "loss_log.csv")
+    with open(log_path, "w", newline="") as f:
+        writer = csv.writer(f)
+        writer.writerow(
+            [
+                "epoch",
+                "train_loss",
+                "train_cls",
+                "train_reg",
+                "val_loss",
+                "val_cls",
+                "val_reg",
+                "lr",
+            ]
+        )
+    best_val = float("inf")
+    for epoch in range(1, epochs + 1):
+        # ——— Training ———
+        model.train()
+        t_loss = t_cls = t_reg = 0.0
+        steps = 0
+        with gpu_safe_context():
+            pbar = tqdm(train_loader, desc=f"Epoch {epoch} [Train]")
+            for batch in pbar:
+                loss, c_loss, r_loss = process_train_batch(
+                    batch, model, optimizer, scheduler, scaler, device
+                )
+                steps += 1
+                t_loss += loss
+                t_cls += c_loss
+                t_reg += r_loss
+                avg = t_loss / steps
+                pbar.set_postfix(
+                    {
+                        "loss": f"{loss:.4f}",
+                        "cls": f"{t_cls/steps:.4f}",
+                        "reg": f"{t_reg/steps:.4f}",
+                        "avg": f"{avg:.4f}",
+                        "lr": f"{scheduler.get_last_lr()[0]:.2e}",
+                    }
+                )
+        train_loss = t_loss / steps
+        train_cls = t_cls / steps
+        train_reg = t_reg / steps
+        print(f"Epoch {epoch} — Train Avg Loss: {train_loss:.4f}")
+
+        # ——— Validation ———
+        model.eval()
+        v_loss = v_cls = v_reg = 0.0
+        v_steps = 0
+        with gpu_safe_context():
+            pbar = tqdm(val_loader, desc=f"Epoch {epoch} [Val]")
+            for batch in pbar:
+                loss, c_loss, r_loss = process_val_batch(batch, model, device)
+                v_steps += 1
+                v_loss += loss
+                v_cls += c_loss
+                v_reg += r_loss
+                pbar.set_postfix(
+                    {
+                        "loss": f"{loss:.4f}",
+                        "cls": f"{v_cls/v_steps:.4f}",
+                        "reg": f"{v_reg/v_steps:.4f}",
+                    }
+                )
+        val_loss = v_loss / v_steps
+        val_cls = v_cls / v_steps
+        val_reg = v_reg / v_steps
+        print(f"Epoch {epoch} — Val Avg Loss: {val_loss:.4f}")
+
+        lr = scheduler.get_last_lr()[0]
+        with open(log_path, "a", newline="") as f:
+            writer = csv.writer(f)
+            writer.writerow(
+                [
+                    epoch,
+                    f"{train_loss:.6f}",
+                    f"{train_cls:.6f}",
+                    f"{train_reg:.6f}",
+                    f"{val_loss:.6f}",
+                    f"{val_cls:.6f}",
+                    f"{val_reg:.6f}",
+                    f"{lr:.6e}",
+                ]
+            )
+
+        if val_loss < best_val:
+            best_val = val_loss
+            torch.save(
+                {
+                    "epoch": epoch,
+                    "model": model.state_dict(),
+                    "optimizer": optimizer.state_dict(),
+                    "scheduler": scheduler.state_dict(),
+                    "scaler": scaler.state_dict(),
+                    "best_val": best_val,
+                },
+                f"{ckpt_dir}/best.pth",
+            )
+            print(f">>> New best model at epoch {epoch}: {best_val:.4f}")
+        torch.save(
+            {
+                "epoch": epoch,
+                "model": model.state_dict(),
+                "optimizer": optimizer.state_dict(),
+                "scheduler": scheduler.state_dict(),
+                "scaler": scaler.state_dict(),
+                "best_val": best_val,
+            },
+            f"{ckpt_dir}/epoch{epoch}.pth",
+        )
+    print("Training complete.")
