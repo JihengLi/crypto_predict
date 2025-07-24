@@ -22,7 +22,7 @@ def process_train_batch(
     scheduler,
     scaler,
     device,
-    micro_seq_len: int = 1024,
+    micro_seq_len: int = 3000,
     clip_grad: float = 5.0,
 ):
     optimizer.zero_grad(set_to_none=True)
@@ -54,18 +54,27 @@ def process_train_batch(
 
 
 @torch.inference_mode()
-def process_val_batch(batch, model, device):
-    x = batch["inputs"].to(device, non_blocking=True)
+def process_val_batch(
+    batch,
+    model,
+    device,
+    micro_seq_len: int = 3000,
+):
+    inputs = batch["inputs"].to(device, non_blocking=True)
     cls = batch["cls"].to(device, non_blocking=True)
     p90 = batch["p90"].to(device, non_blocking=True)
     p10 = batch["p10"].to(device, non_blocking=True)
     sigma = batch["sigma"].to(device, non_blocking=True)
 
+    seq_chunks = torch.split(inputs, micro_seq_len, dim=1)
     with autocast(device.type):
-        dir_logits, reg_out = model(x)
-        dir_logits = dir_logits.squeeze(-1)
+        for i, x_chunk in enumerate(seq_chunks):
+            dir_logits_chunk, reg_out_chunk = model(x_chunk)
+            if i < len(seq_chunks) - 1:
+                dir_logits_chunk = dir_logits_chunk.detach()
+                reg_out_chunk = reg_out_chunk.detach()
         loss, cls_loss, reg_loss = model.multi_task_loss(
-            dir_logits, reg_out, cls, p90, p10, sigma
+            dir_logits_chunk, reg_out_chunk, cls, p90, p10, sigma
         )
     return loss.item(), cls_loss.item(), reg_loss.item()
 
@@ -113,13 +122,13 @@ def train_loop(
                 t_loss += loss
                 t_cls += c_loss
                 t_reg += r_loss
-                avg = t_loss / steps
+                t_avg = t_loss / steps
                 pbar.set_postfix(
                     {
                         "loss": f"{loss:.4f}",
                         "cls": f"{t_cls/steps:.4f}",
                         "reg": f"{t_reg/steps:.4f}",
-                        "avg": f"{avg:.4f}",
+                        "avg": f"{t_avg:.4f}",
                         "lr": f"{scheduler.get_last_lr()[0]:.2e}",
                     }
                 )
@@ -140,11 +149,13 @@ def train_loop(
                 v_loss += loss
                 v_cls += c_loss
                 v_reg += r_loss
+                v_avg = v_loss / v_steps
                 pbar.set_postfix(
                     {
                         "loss": f"{loss:.4f}",
                         "cls": f"{v_cls/v_steps:.4f}",
                         "reg": f"{v_reg/v_steps:.4f}",
+                        "v_avg": f"{v_avg:.4f}",
                     }
                 )
         val_loss = v_loss / v_steps

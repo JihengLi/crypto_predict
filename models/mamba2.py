@@ -72,6 +72,8 @@ class Mamba2Multitask(nn.Module):
         num_layers: int = 4,
         dropout: float = 0.1,
         max_len: int = 10000,
+        cls_weight: float = 2.0,
+        reg_weight: float = 1.0,
     ):
         super().__init__()
         self.input_proj = nn.Linear(input_dim, d_model)
@@ -97,8 +99,23 @@ class Mamba2Multitask(nn.Module):
         self.dir_head = nn.Linear(d_model, 3)
         self.reg_head = nn.Linear(d_model, 3)
 
+        self.cls_weight = cls_weight
+        self.reg_weight = reg_weight
         self.log_var_cls = nn.Parameter(torch.zeros(()))
         self.log_var_reg = nn.Parameter(torch.zeros(()))
+
+        self.reset_parameters()
+
+    def reset_parameters(self):
+        for m in self.modules():
+            if isinstance(m, nn.Linear):
+                nn.init.xavier_uniform_(m.weight)
+                if m.bias is not None:
+                    nn.init.zeros_(m.bias)
+            elif isinstance(m, nn.Conv1d):
+                nn.init.kaiming_uniform_(m.weight, a=math.sqrt(5))
+                if m.bias is not None:
+                    nn.init.zeros_(m.bias)
 
     def forward(self, x: torch.Tensor):
         _, L, _ = x.shape
@@ -124,9 +141,9 @@ class Mamba2Multitask(nn.Module):
             + mse(reg_out[:, 2], sigma)
         ) / 3.0
         loss = (
-            cls_loss * torch.exp(-self.log_var_cls)
-            + self.log_var_cls
-            + reg_loss * torch.exp(-self.log_var_reg)
-            + self.log_var_reg
+            self.cls_weight
+            * (cls_loss * torch.exp(-self.log_var_cls) + self.log_var_cls)
+            + self.reg_weight
+            * (reg_loss * torch.exp(-self.log_var_reg) + self.log_var_reg)
         ) * 0.5
         return loss, cls_loss, reg_loss
