@@ -1,1 +1,1 @@
-from .mamba2 import *
+from .mamba2_config import *

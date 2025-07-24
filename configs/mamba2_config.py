@@ -32,9 +32,9 @@ class Mamba2Config:
         )
         train_loader = DataLoader(
             train_dataset,
-            batch_size=32,
+            batch_size=16,
             shuffle=True,
-            num_workers=8,
+            num_workers=16,
             pin_memory=True,
             drop_last=True,
         )
@@ -46,15 +46,17 @@ class Mamba2Config:
         )
         val_loader = DataLoader(
             val_dataset,
-            batch_size=32,
+            batch_size=16,
             shuffle=False,
-            num_workers=8,
+            num_workers=16,
             pin_memory=True,
         )
         return train_loader, val_loader
 
     def _build_model(self):
-        model = Mamba2Multitask().to(self.device)
+        model = Mamba2Multitask(dropout=0.3, drop_path_prob=0.3, enable_mhsa=False).to(
+            self.device
+        )
         return model
 
     def _build_optimizer(self):
@@ -72,10 +74,10 @@ class Mamba2Config:
 
         return torch.optim.AdamW(
             [
-                {"params": decay_params, "weight_decay": 1e-2},
+                {"params": decay_params, "weight_decay": 3e-2},
                 {"params": no_decay_params, "weight_decay": 0.0},
             ],
-            lr=3e-4,
+            lr=1e-4,
             betas=(0.9, 0.999),
             eps=1e-8,
         )
@@ -110,4 +112,7 @@ class Mamba2Config:
         )
 
     def _build_scaler(self):
-        return GradScaler(init_scale=2**14, growth_interval=2000)
+        return GradScaler(
+            init_scale=2**14,
+            growth_interval=2000,
+        )

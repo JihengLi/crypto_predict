@@ -46,7 +46,6 @@ def mamba_chunk_scan_combined(
             dA = torch.exp(dt_t * A.reshape(1, h, 1, 1))  # (B, h, 1, 1)
             dBx = dt_t * B_t * x_t  # (B, h, p, d_state)
             state = state * dA + dBx
-            state = state.detach()
             y_ssm = torch.einsum("bhpd,bhpd->bhp", state, C_t.expand_as(state))
             if D is not None:
                 D_exp = D if D.ndim == 2 else D.view(h, 1)
@@ -252,12 +251,10 @@ class Mamba2Block(nn.Module, PyTorchModelHubMixin):
         )
 
         # Conv step
-        conv_state.copy_(
-            torch.roll(conv_state, shifts=-1, dims=-1)
-        )  # Update state (B D W)
-        conv_state[:, :, -1] = xBC
+        conv_state_new = torch.roll(conv_state, shifts=-1, dims=-1).clone()  # (B,D,W)
+        conv_state_new[:, :, -1] = xBC
         xBC = torch.sum(
-            conv_state * rearrange(self.conv1d.weight, "d 1 w -> d w"), dim=-1
+            conv_state_new * rearrange(self.conv1d.weight, "d 1 w -> d w"), dim=-1
         )  # (B D)
         if self.conv1d.bias is not None:
             xBC = xBC + self.conv1d.bias
@@ -277,8 +274,8 @@ class Mamba2Block(nn.Module, PyTorchModelHubMixin):
         dA = torch.exp(dt * A)  # (batch, nheads)
         x = rearrange(x, "b (h p) -> b h p", p=self.headdim)
         dBx = torch.einsum("bh,bn,bhp->bhpn", dt, B, x)
-        ssm_state.copy_(ssm_state * rearrange(dA, "b h -> b h 1 1") + dBx)
-        y = torch.einsum("bhpn,bn->bhp", ssm_state.to(dtype), C)
+        ssm_state_new = ssm_state * dA.unsqueeze(-1).unsqueeze(-1) + dBx
+        y = torch.einsum("bhpn,bn->bhp", ssm_state_new.to(dtype), C)
         y = y + rearrange(self.D.to(dtype), "h -> h 1") * x
         y = rearrange(y, "b h p -> b (h p)")
         if not self.rmsnorm:
@@ -288,4 +285,22 @@ class Mamba2Block(nn.Module, PyTorchModelHubMixin):
         if d_mlp > 0:
             y = torch.cat([F.silu(z0) * x0, y], dim=-1)
         out = self.out_proj(y)
-        return out.unsqueeze(1), conv_state, ssm_state
+        return out.unsqueeze(1), conv_state_new.detach(), ssm_state_new.detach()
+
+    @torch.no_grad()
+    def allocate_inference_cache(self, batch_size: int):
+        device = self.out_proj.weight.device
+        dtype = self.out_proj.weight.dtype
+        conv_dim = self.d_ssm + 2 * self.ngroups * self.d_state  # = in_channels
+        conv_state = torch.zeros(
+            batch_size, conv_dim, self.d_conv, device=device, dtype=dtype
+        )  # (B, D, W)
+        ssm_state = torch.zeros(
+            batch_size,
+            self.nheads,
+            self.headdim,
+            self.d_state,
+            device=device,
+            dtype=dtype,
+        )  # (B, H, P, N)
+        return conv_state, ssm_state

@@ -15,6 +15,14 @@ def gpu_safe_context():
         raise
 
 
+def _detach_states(st):
+    if torch.is_tensor(st):
+        return st.detach()
+    if isinstance(st, (list, tuple)):
+        return tuple(_detach_states(s) for s in st)
+    return st
+
+
 def process_train_batch(
     batch,
     model,
@@ -22,34 +30,45 @@ def process_train_batch(
     scheduler,
     scaler,
     device,
-    micro_seq_len: int = 3000,
+    tbptt_len: int = 4096,
     clip_grad: float = 5.0,
 ):
-    optimizer.zero_grad(set_to_none=True)
-
     inputs = batch["inputs"].to(device, non_blocking=True)
     cls = batch["cls"].to(device, non_blocking=True)
     p90 = batch["p90"].to(device, non_blocking=True)
     p10 = batch["p10"].to(device, non_blocking=True)
     sigma = batch["sigma"].to(device, non_blocking=True)
 
-    seq_chunks = torch.split(inputs, micro_seq_len, dim=1)
-    with autocast(device.type):
-        for i, x_chunk in enumerate(seq_chunks):
-            dir_logits_chunk, reg_out_chunk = model(x_chunk)
-            if i < len(seq_chunks) - 1:
-                dir_logits_chunk = dir_logits_chunk.detach()
-                reg_out_chunk = reg_out_chunk.detach()
-        loss, cls_loss, reg_loss = model.multi_task_loss(
-            dir_logits_chunk, reg_out_chunk, cls, p90, p10, sigma
-        )
+    B, L, _ = inputs.shape
+    states = model.allocate_inference_cache(B)
+    optimizer.zero_grad(set_to_none=True)
+    h_sum = torch.zeros(B, model.d_model, device=device, dtype=inputs.dtype)
+    steps_since_reset = 0
 
-    scaler.scale(loss).backward()
-    scaler.unscale_(optimizer)
-    torch.nn.utils.clip_grad_norm_(model.parameters(), clip_grad)
-    scaler.step(optimizer)
-    scaler.update()
-    scheduler.step()
+    with autocast(device.type):
+        for t in range(L):
+            y_t, states = model.step(inputs[:, t : t + 1], states)
+            h_sum += y_t.squeeze(1)
+            steps_since_reset += 1
+            reached_boundary = (steps_since_reset == tbptt_len) or (t == L - 1)
+            if not reached_boundary:
+                continue
+            h_avg = h_sum / steps_since_reset
+            dir_logits, reg_out = model.heads(h_avg)
+            loss, cls_loss, reg_loss = model.multi_task_loss(
+                dir_logits, reg_out, cls, p90, p10, sigma
+            )
+            scaler.scale(loss).backward()
+            scaler.unscale_(optimizer)
+            torch.nn.utils.clip_grad_norm_(model.parameters(), clip_grad)
+            scaler.step(optimizer)
+            scaler.update()
+            scheduler.step()
+            optimizer.zero_grad(set_to_none=True)
+            states = _detach_states(states)
+            h_sum = torch.zeros_like(h_sum)
+            steps_since_reset = 0
+            torch.cuda.empty_cache()
     return loss.item(), cls_loss.item(), reg_loss.item()
 
 
@@ -58,7 +77,7 @@ def process_val_batch(
     batch,
     model,
     device,
-    micro_seq_len: int = 3000,
+    tbptt_len: int = 4096,
 ):
     inputs = batch["inputs"].to(device, non_blocking=True)
     cls = batch["cls"].to(device, non_blocking=True)
@@ -66,16 +85,28 @@ def process_val_batch(
     p10 = batch["p10"].to(device, non_blocking=True)
     sigma = batch["sigma"].to(device, non_blocking=True)
 
-    seq_chunks = torch.split(inputs, micro_seq_len, dim=1)
+    B, L, _ = inputs.shape
+    states = model.allocate_inference_cache(B)
+    h_sum = torch.zeros(B, model.d_model, device=device, dtype=inputs.dtype)
+    steps_since_reset = 0
+
     with autocast(device.type):
-        for i, x_chunk in enumerate(seq_chunks):
-            dir_logits_chunk, reg_out_chunk = model(x_chunk)
-            if i < len(seq_chunks) - 1:
-                dir_logits_chunk = dir_logits_chunk.detach()
-                reg_out_chunk = reg_out_chunk.detach()
-        loss, cls_loss, reg_loss = model.multi_task_loss(
-            dir_logits_chunk, reg_out_chunk, cls, p90, p10, sigma
-        )
+        for t in range(L):
+            y_t, states = model.step(inputs[:, t : t + 1], states)
+            h_sum += y_t.squeeze(1)
+            steps_since_reset += 1
+            reached_boundary = (steps_since_reset == tbptt_len) or (t == L - 1)
+            if not reached_boundary:
+                continue
+            h_avg = h_sum / steps_since_reset
+            dir_logits, reg_out = model.heads(h_avg)
+            loss, cls_loss, reg_loss = model.multi_task_loss(
+                dir_logits, reg_out, cls, p90, p10, sigma
+            )
+            states = _detach_states(states)
+            h_sum = torch.zeros_like(h_sum)
+            steps_since_reset = 0
+            torch.cuda.empty_cache()
     return loss.item(), cls_loss.item(), reg_loss.item()
 
 
@@ -106,7 +137,7 @@ def train_loop(
                 "lr",
             ]
         )
-    best_val = float("inf")
+    best_val_loss = float("inf")
     for epoch in range(1, epochs + 1):
         # ——— Training ———
         model.train()
@@ -179,8 +210,8 @@ def train_loop(
                 ]
             )
 
-        if val_loss < best_val:
-            best_val = val_loss
+        if val_loss < best_val_loss:
+            best_val_loss = val_loss
             torch.save(
                 {
                     "epoch": epoch,
@@ -188,11 +219,11 @@ def train_loop(
                     "optimizer": optimizer.state_dict(),
                     "scheduler": scheduler.state_dict(),
                     "scaler": scaler.state_dict(),
-                    "best_val": best_val,
+                    "best_val_loss": best_val_loss,
                 },
                 f"{ckpt_dir}/best.pth",
             )
-            print(f">>> New best model at epoch {epoch}: {best_val:.4f}")
+            print(f">>> New best model at epoch {epoch}: {best_val_loss:.4f}")
         torch.save(
             {
                 "epoch": epoch,
@@ -200,7 +231,7 @@ def train_loop(
                 "optimizer": optimizer.state_dict(),
                 "scheduler": scheduler.state_dict(),
                 "scaler": scaler.state_dict(),
-                "best_val": best_val,
+                "best_val_loss": best_val_loss,
             },
             f"{ckpt_dir}/epoch{epoch}.pth",
         )
