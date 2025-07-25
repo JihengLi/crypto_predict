@@ -13,7 +13,7 @@ if __name__ == "__main__":
     labels_path = "data/features/labels.npy"
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    cfg = Mamba2Config(
+    cfg = Mamba2BaselineConfig(
         features_path=features_path,
         labels_path=labels_path,
         epochs=EPOCH_NUM,

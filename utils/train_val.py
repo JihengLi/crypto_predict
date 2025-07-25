@@ -33,6 +33,7 @@ def process_train_batch(
     tbptt_len: int = 4096,
     clip_grad: float = 5.0,
 ):
+    model.train()
     inputs = batch["inputs"].to(device, non_blocking=True)
     cls = batch["cls"].to(device, non_blocking=True)
     p90 = batch["p90"].to(device, non_blocking=True)
@@ -79,6 +80,7 @@ def process_val_batch(
     device,
     tbptt_len: int = 4096,
 ):
+    model.eval()
     inputs = batch["inputs"].to(device, non_blocking=True)
     cls = batch["cls"].to(device, non_blocking=True)
     p90 = batch["p90"].to(device, non_blocking=True)
@@ -120,6 +122,7 @@ def train_loop(
     device,
     epochs,
     ckpt_dir,
+    tbptt_len: int = 1024,
 ):
     os.makedirs(ckpt_dir, exist_ok=True)
     log_path = os.path.join(ckpt_dir, "loss_log.csv")
@@ -140,14 +143,13 @@ def train_loop(
     best_val_loss = float("inf")
     for epoch in range(1, epochs + 1):
         # ——— Training ———
-        model.train()
         t_loss = t_cls = t_reg = 0.0
         steps = 0
         with gpu_safe_context():
             pbar = tqdm(train_loader, desc=f"Epoch {epoch} [Train]")
             for batch in pbar:
                 loss, c_loss, r_loss = process_train_batch(
-                    batch, model, optimizer, scheduler, scaler, device
+                    batch, model, optimizer, scheduler, scaler, device, tbptt_len
                 )
                 steps += 1
                 t_loss += loss
@@ -169,13 +171,14 @@ def train_loop(
         print(f"Epoch {epoch} — Train Avg Loss: {train_loss:.4f}")
 
         # ——— Validation ———
-        model.eval()
         v_loss = v_cls = v_reg = 0.0
         v_steps = 0
         with gpu_safe_context():
             pbar = tqdm(val_loader, desc=f"Epoch {epoch} [Val]")
             for batch in pbar:
-                loss, c_loss, r_loss = process_val_batch(batch, model, device)
+                loss, c_loss, r_loss = process_val_batch(
+                    batch, model, device, tbptt_len
+                )
                 v_steps += 1
                 v_loss += loss
                 v_cls += c_loss

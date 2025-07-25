@@ -7,8 +7,6 @@ from einops import rearrange
 
 
 class MultiHeadAttention(nn.Module):
-    """Multi-head self-attention and cross-attention"""
-
     def __init__(
         self,
         embed_dim,
@@ -136,20 +134,19 @@ class MultiHeadAttention(nn.Module):
         cache: (kv_cache, conv_state, t_ptr)
         return: (out_t, new_cache)
         """
-        kv_cache, conv_state, t_ptr = cache  # kv_cache:(B,L_max,2,Hkv,dh)
+        kv_cache, conv_state, t_ptr = cache
         B, _, _ = x_t.shape
         dtype = x_t.dtype
         device = x_t.device
         H, H_kv, dh = self.num_heads, self.num_heads_kv, self.head_dim
-        qkv = self.in_proj(x_t)  # (B,1, qkv_dim)
+        qkv = self.in_proj(x_t)
 
         if self.d_conv > 0:
-            qkv_flat = qkv.squeeze(1)  # (B,D)
-            # roll & write conv_state
-            conv_state = torch.roll(conv_state, shifts=-1, dims=-1)  # (B,D,K)
+            qkv_flat = qkv.squeeze(1)
+            conv_state = torch.roll(conv_state, shifts=-1, dims=-1)
             conv_state[..., -1] = qkv_flat.to(conv_state.dtype)
-            w = self.conv1d.weight.squeeze(1)  # (D,K)
-            qkv_flat = torch.einsum("bdw,dw->bd", conv_state, w)  # (B,D)
+            w = self.conv1d.weight.squeeze(1)
+            qkv_flat = torch.einsum("bdw,dw->bd", conv_state, w)
             if self.conv1d.bias is not None:
                 qkv_flat = qkv_flat + self.conv1d.bias
             qkv = qkv_flat.unsqueeze(1)
@@ -165,21 +162,21 @@ class MultiHeadAttention(nn.Module):
         t_ptr_new = t_ptr + 1  # (B,)
 
         max_L = int(t_ptr_new.max().item())
-        k_eff = kv_cache[:, :max_L, 0].to(dtype)  # (B,L_eff,Hkv,dh)
+        k_eff = kv_cache[:, :max_L, 0].to(dtype)
         v_eff = kv_cache[:, :max_L, 1].to(dtype)
 
         repeat = H // H_kv
-        k_eff = k_eff.repeat_interleave(repeat, dim=2)  # (B,L_eff,H,dh)
+        k_eff = k_eff.repeat_interleave(repeat, dim=2)
         v_eff = v_eff.repeat_interleave(repeat, dim=2)
 
-        q = q.transpose(1, 2)  # (B,H,1,dh)
-        k = k_eff.transpose(1, 2)  # (B,H,L_eff,dh)
+        q = q.transpose(1, 2)
+        k = k_eff.transpose(1, 2)
         v = v_eff.transpose(1, 2)
         context = F.scaled_dot_product_attention(
             q, k, v, is_causal=True, scale=self.softmax_scale
-        )  # (B,H,1,dh)
-        context = context.transpose(1, 2).reshape(B, 1, -1)  # (B,1,D)
+        )
+        context = context.transpose(1, 2).reshape(B, 1, -1)
 
-        out_t = self.out_proj(context)  # (B,1,D_model)
+        out_t = self.out_proj(context)
         new_cache = (kv_cache, conv_state, t_ptr_new)
         return out_t, new_cache

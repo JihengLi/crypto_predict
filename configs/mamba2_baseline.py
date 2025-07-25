@@ -6,7 +6,7 @@ from models import *
 from datasets import *
 
 
-class Mamba2Config:
+class Mamba2BaselineConfig:
     def __init__(
         self,
         features_path,
@@ -55,9 +55,18 @@ class Mamba2Config:
         return train_loader, val_loader
 
     def _build_model(self):
-        model = Mamba2Multitask(dropout=0.3, drop_path_prob=0.3, enable_mhsa=True).to(
-            self.device
-        )
+        model = model = Mamba2Multitask(
+            d_model=320,
+            d_state=64,
+            d_conv=4,
+            num_layers=6,
+            expand=2,
+            dropout=0.15,
+            drop_path_prob=0.05,
+            cls_weight=2.0,
+            reg_weight=1.0,
+            enable_mhsa=False,
+        ).to(self.device)
         return model
 
     def _build_optimizer(self):
@@ -75,18 +84,18 @@ class Mamba2Config:
 
         return torch.optim.AdamW(
             [
-                {"params": decay_params, "weight_decay": 3e-2},
+                {"params": decay_params, "weight_decay": 2e-2},
                 {"params": no_decay_params, "weight_decay": 0.0},
             ],
             lr=1e-4,
-            betas=(0.9, 0.999),
+            betas=(0.9, 0.98),
             eps=1e-8,
         )
 
     def _build_scheduler_cosine_decay(self):
-        warmup_pct = 0.10
-        start_factor = 1e-2
-        min_lr_ratio = 1e-4
+        warmup_pct = 0.06
+        start_factor = 3e-2
+        min_lr_ratio = 3e-4
 
         steps_per_epoch = len(self.train_loader)
         total_steps = self.epochs * steps_per_epoch
@@ -113,7 +122,4 @@ class Mamba2Config:
         )
 
     def _build_scaler(self):
-        return GradScaler(
-            init_scale=2**14,
-            growth_interval=2000,
-        )
+        return GradScaler(init_scale=2**14, growth_interval=1000, enabled=True)
