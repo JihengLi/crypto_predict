@@ -56,6 +56,7 @@ class Mamba2BaselineConfig:
 
     def _build_model(self):
         model = model = Mamba2Multitask(
+            input_dim=42,
             d_model=320,
             d_state=64,
             d_conv=4,

@@ -17,16 +17,12 @@ macd
 macd_hist
 macd_signal
 rsi14
-realvol_7d
-realvol_30d
-realvol_60d
 transaction_size_mean
 sopr
 supply_last_active
 stock_to_flow_ratio_ratio
 stock_to_flow_ratio_price
 stock_to_flow_ratio_daysTillHalving
-log_ret
 difficulty_ribbon_ma9
 difficulty_ribbon_ma14
 difficulty_ribbon_ma25
