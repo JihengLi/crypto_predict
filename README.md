@@ -1,7 +1,7 @@
 # CryptoPredict (Mamba2 + TBPTT)
 
-**Author**: Jiheng Li
-**Copyright**: This project and all its code, documentation, and related content are owned by Jiheng Li. Unauthorized reproduction or commercial use is prohibited.
+**Author:** Jiheng Li  
+**Copyright:** This project and all its code, documentation, and related content are owned by Jiheng Li. Unauthorized reproduction or commercial use is prohibited.
 
 Long‑horizon Bitcoin forecasting with a custom Mamba2 state‑space backbone, optional sparse Multi‑Head Self‑Attention (MHSA), and Truncated Backpropagation Through Time (TBPTT). The model jointly predicts: (1) a 3‑class 90‑day direction label and (2) continuous targets p90 / p10 / σ (30‑day realized vol). We emphasize **no label leakage**, **GPU‑friendly training**, and **stable optimization on a single GPU**.
 
